@@ -1,0 +1,16 @@
+{
+  "total_trades": 10,
+  "profit_trades": 8,
+  "loss_trades": 2,
+  "total_pnl": 11.372093560000014,
+  "up_trades": 0,
+  "up_pnl": 0.0,
+  "total_trades_up": 9,
+  "total_pnl_up": 10.718200000000014,
+  "wins_up": 7,
+  "losses_up": 2,
+  "levels_down_closed": 1,
+  "total_pnl_down": 0.6538935600000002,
+  "wins_down": 1,
+  "losses_down": 0
+}
