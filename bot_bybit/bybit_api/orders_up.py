@@ -159,65 +159,80 @@ def sell_strk() -> str:
     print("SELL market order:", order)
 
     # --- Попытка посчитать PnL, если есть цена входа вверх ---
-    pnl = None
     avg_sell_price = None
+    qty_exec = None
 
     try:
         order_id = order["result"]["orderId"]
-        history = client.get_order_history(
-            category="spot",
-            orderId=order_id,
-            symbol=SYMBOL
-        )
-        lst = history.get("result", {}).get("list", [])
-        if lst:
-            row = lst[0]
-            avg_sell_price = float(row.get("avgPrice", "0") or "0")
-            qty_exec = float(row.get("cumExecQty", "0") or "0")
 
-            # если знаем цену входу вверх — считаем PnL
-            if st.entry_price_up is not None and qty_exec > 0 and avg_sell_price > 0:
-                pnl = (avg_sell_price - st.entry_price_up) * qty_exec
+        # Bybit иногда задерживает историю — делаем 5 попыток
+        for _ in range(6):
+            history = client.get_order_history(
+                category="spot",
+                orderId=order_id,
+                symbol=SYMBOL
+            )
+            lst = history.get("result", {}).get("list", [])
+            if lst:
+                row = lst[0]
+                avg_raw = row.get("avgPrice")
+                qty_raw = row.get("cumExecQty")
 
-                # --- ОБНОВЛЯЕМ СТАТИСТИКУ ---
-                st.total_trades += 1
-                st.total_trades_up += 1
+                if avg_raw not in ("0", None, "") and qty_raw not in ("0", None, ""):
+                    avg_sell_price = float(avg_raw)
+                    qty_exec = float(qty_raw)
+                    break
 
-                if pnl >= 0:
-                    st.profit_trades += 1
-                    st.wins_up += 1
-                else:
-                    st.loss_trades += 1
-                    st.losses_up += 1
+            time.sleep(0.25)  # задержка между попытками
 
-                st.total_pnl += pnl
-                st.total_pnl_up += pnl
+        # Если удалось получить avg и qty — считаем PnL
+        if (
+                st.entry_price_up is not None
+                and avg_sell_price is not None
+                and qty_exec is not None
+                and qty_exec > 0
+        ):
+            pnl = (avg_sell_price - st.entry_price_up) * qty_exec
 
-                save_stats_to_file()
+            # --- ОБНОВЛЯЕМ СТАТИСТИКУ ---
+            st.total_trades += 1
+            st.total_trades_up += 1
 
-                print(
-                    f"[UP SELL] qty={qty_exec}, "
-                    f"buy={st.entry_price_up}, sell={avg_sell_price}, pnl={pnl}"
-                )
+            if pnl >= 0:
+                st.profit_trades += 1
+            else:
+                st.loss_trades += 1
+
+            st.total_pnl += pnl
+            st.total_pnl_up += pnl
+
+            save_stats_to_file()
+
+            print(f"[UP SELL] qty={qty_exec}, buy={st.entry_price_up}, sell={avg_sell_price}, pnl={pnl}")
 
     except Exception as e:
         # не ломаем бота, если статистику не получилось посчитать
         print("Error while calculating PnL for SELL:", e)
 
     # --- Формируем ответ для Telegram (ВСЕГДА строка) ---
-    if pnl is not None and avg_sell_price is not None:
+    # 1) Полный успех → и продажа, и PnL рассчитан
+    if (pnl is not None) and (avg_sell_price is not None):
         return (
             f"✅ Продано STRK : *{strk}*\n"
             f"Цена продажи : *{avg_sell_price}*\n"
             f"PnL по сделке : *{round(pnl, 4)}* USDT"
         )
 
+        # 2) Если есть avg_sell_price, но PnL не смогли посчитать
     if avg_sell_price is not None:
         return (
             f"✅ Продано STRK : *{strk}*\n"
             f"Цена продажи : *{avg_sell_price}*\n"
-            f"PnL невозможно рассчитать (нет цены входа)"
+            f"PnL невозможно рассчитать (нет входной цены)"
         )
 
-    # fallback — если даже avg_sell_price не удалось достать
-    return f"✅ Продано STRK : *{strk}*"
+        # 3) Если Bybit не прислал историю (редчайший случай)
+    return (
+        f"✅ Продано STRK : *{strk}*\n"
+        f"PnL невозможно рассчитать (данные Bybit не пришли)"
+    )

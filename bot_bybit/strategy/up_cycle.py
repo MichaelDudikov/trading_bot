@@ -134,7 +134,7 @@ async def strategy_cycle(chat_id: int, bot: Bot):
 
                         # продаём STRK по рынку
                         sell_msg = sell_strk()
-                        await bot.send_message(chat_id, sell_msg)
+                        await bot.send_message(chat_id, sell_msg, parse_mode="Markdown")
 
                         # выключаем UP
                         st.strategy_running = False

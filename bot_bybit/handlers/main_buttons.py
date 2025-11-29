@@ -20,7 +20,7 @@ router = Router()
 async def cmd_start(message: types.Message):
     await message.answer(
         "Привет 👋 я бот для торговли на Bybit 🤖\n\n"
-        "Стратегия: BUY → TP → BUY → TP\n"
+        "Стратегия : BUY → TP → BUY → TP\n"
         "При развороте вниз включается откуп падения по уровням (DOWN).\n\n"
         "Выбери действие ⬇️",
         reply_markup=main_kb
@@ -48,7 +48,7 @@ async def cmd_stop(message: types.Message):
 @router.message(F.text == "📈 цена STRK")
 async def btn_price_strk(message: types.Message):
     price = get_price()
-    await message.answer(f"📈 Цена STRK: *{price}*", parse_mode="Markdown")
+    await message.answer(f"📈 Цена STRK : *{price}*", parse_mode="Markdown")
 
 
 # 💰 Баланс STRK
@@ -58,7 +58,7 @@ async def btn_balance_strk(message: types.Message):
     if isinstance(bal, (int, float)):
         bal = round(bal, 3)
 
-    await message.answer(f"💰 Ваш баланс STRK: *{bal}*", parse_mode="Markdown")
+    await message.answer(f"💰 Ваш баланс STRK : *{bal}*", parse_mode="Markdown")
 
 
 # 💲 Баланс USDT
@@ -68,7 +68,7 @@ async def btn_balance_usdt(message: types.Message):
     if isinstance(bal, (int, float)):
         bal = round(bal, 2)
 
-    await message.answer(f"💲 Ваш баланс USDT: *{bal}*", parse_mode="Markdown")
+    await message.answer(f"💲 Ваш баланс USDT : *{bal}*", parse_mode="Markdown")
 
 
 # 📊 Активный ордер

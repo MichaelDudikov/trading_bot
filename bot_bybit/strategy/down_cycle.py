@@ -88,7 +88,7 @@ async def enter_down_mode(chat_id: int, last_price: float, bot: Bot):
 
     await bot.send_message(
         chat_id,
-        f"📉 Переход в режим торговли вниз (DOWN)\n\n"
+        f"📉 Переход в режим торговли вниз DOWN\n\n"
         f"Базовая цена : *{st.down_base_price}* (ждём ≈ *{down_base_price_90}*)\n"
         f"Текущая цена : *{last_price}*\n\n"
         f"Всего USDT для откупа : *{st.down_usdt_total}*\n"
@@ -113,7 +113,7 @@ async def down_mode_cycle(chat_id: int, bot: Bot):
 
     await bot.send_message(
         chat_id,
-        "✔ DOWN-режим активирован\n🔍 Ждём уровни падения ..."
+        "✔ DOWN-режим активирован\nЖдём уровни падения 🔍"
     )
 
     while st.down_active:
@@ -248,7 +248,7 @@ async def down_mode_cycle(chat_id: int, bot: Bot):
                 f"🟢 Уровень *{st.down_levels_completed}/{DOWN_LEVELS}* откуплен\n"
                 f"Цена входа : *{avg}*\n"
                 f"Take Profit : *{tp}*\n"
-                f"ATR: {round(atr_percent * 100, 2)}%",
+                f"ATR : *{round(atr_percent * 100, 2)}* %",
                 parse_mode="Markdown"
             )
 

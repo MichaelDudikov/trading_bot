@@ -1,5 +1,6 @@
 import asyncio
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
 from config import BOT_TOKEN
 # import logging
 # Импортируем роутеры с кнопками
@@ -8,7 +9,10 @@ from handlers.cancel_order import router as cancel_router
 from strategy.stats_storage import load_stats_from_file
 
 
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode="Markdown")
+)
 dp = Dispatcher()
 
 
