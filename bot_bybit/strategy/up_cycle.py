@@ -1,7 +1,7 @@
 import asyncio
 from aiogram import Bot
 from pybit import exceptions
-from bybit_api.detector import get_price, get_active_limit_sell_order
+from bybit_api.detector import get_active_limit_sell_order
 from bybit_api.balances import balance_usdt
 from bybit_api.orders_up import buy_strk, sell_strk
 from bybit_api.client import client
@@ -9,6 +9,7 @@ from strategy import state as st
 from config import DRAWDOWN_TRIGGER, SYMBOL
 from strategy.down_cycle import enter_down_mode
 from strategy.stats_storage import save_stats_to_file
+from bybit_api.price_cache import get_price_cached
 
 
 # ===========================================================
@@ -105,7 +106,7 @@ async def strategy_cycle(chat_id: int, bot: Bot):
             if st.trade_mode == "UP" and st.entry_price_up is not None:
 
                 try:
-                    last_price = get_price()
+                    last_price = get_price_cached()
                 except (exceptions.InvalidRequestError, exceptions.FailedRequestError):
                     last_price = None
 

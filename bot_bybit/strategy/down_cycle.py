@@ -1,13 +1,13 @@
 import asyncio
 import numpy as np
 from aiogram import Bot
-
 from bybit_api.detector import get_price
 from bybit_api.balances import balance_usdt
 from bybit_api.client import client
 from config import SYMBOL, DOWN_LEVELS
 from strategy import state as st
 from strategy.stats_storage import save_stats_to_file
+from bybit_api.price_cache import get_price_cached
 
 
 # ===================== ATR CALCULATION =====================
@@ -120,7 +120,7 @@ async def down_mode_cycle(chat_id: int, bot: Bot):
         await asyncio.sleep(2)
 
         try:
-            price = get_price()
+            price = get_price_cached()
         except Exception as e:
             print("down_mode_cycle get_price error:", e)
             continue
@@ -180,7 +180,7 @@ async def down_mode_cycle(chat_id: int, bot: Bot):
 
             # ждём avgPrice и cumExecQty
             lst = []
-            for _ in range(6):
+            for _ in range(3):
                 h = client.get_order_history(
                     category="spot",
                     orderId=buy_id,
@@ -189,7 +189,7 @@ async def down_mode_cycle(chat_id: int, bot: Bot):
                 lst = h.get("result", {}).get("list", [])
                 if lst and lst[0].get("avgPrice") not in ("0", None, ""):
                     break
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.8)
 
             if not lst:
                 await bot.send_message(chat_id, "⚠ Не удалось получить историю ордера DOWN.")
@@ -219,8 +219,17 @@ async def down_mode_cycle(chat_id: int, bot: Bot):
                 await bot.send_message(chat_id, "❌ Ошибка: количество STRK для TP получилось 0.")
                 continue
 
-            # TP = +2% от средней цены входа уровня
-            tp = round(avg * 1.02, 4)
+            # ПРОФЕССИОНАЛЬНЫЙ TP: hybrid_step + 1%
+            # где hybrid_step = 3% + ATR% (рассчитан выше)
+
+            # hybrid_step мы уже вычислили ранее:
+            # hybrid_step = grid_step + atr_percent
+
+            # +1% сверху → чтобы перекрывать gap между уровнями
+            tp_percent = hybrid_step + 0.01  # +1% запас
+
+            # Итоговый TP для уровня
+            tp = round(avg * (1 + tp_percent), 4)
 
             try:
                 sell = client.place_order(
@@ -269,50 +278,82 @@ async def down_mode_cycle(chat_id: int, bot: Bot):
 
         # ---------------- 6) Проверка закрытия всех TP ----------------
         if st.down_levels_completed > 0 and st.down_sell_orders:
+            # анти-спам API — проверяем не чаще 1 раза в 8 сек
+            import time
+            if time.time() - st.last_open_check < 8:
+                continue
+            st.last_open_check = time.time()
+
             try:
-                open_orders = client.get_open_orders(category="spot", symbol=SYMBOL)
-                open_ids = {o["orderId"] for o in open_orders["result"]["list"]}
+                open_data = client.get_open_orders(category="spot", symbol=SYMBOL)
+                open_list = open_data.get("result", {}).get("list", []) or []
+                open_ids = {o.get("orderId") for o in open_list}
             except Exception as e:
                 print("DOWN get_open_orders error:", e)
-                open_ids = set()
+                # ⚠ Если не смогли получить ордера — НИЧЕГО не решаем.
+                # Считаем, что ещё не всё закрыто, просто ждём следующую итерацию.
+                continue  # или `return` внутри цикла, в зависимости от твоего кода
 
             all_closed = True
             for oid in st.down_sell_orders:
-                if oid in open_ids:
+                if oid in open_ids:  # а open_ids сейчас пустой set()
                     all_closed = False
                     break
 
             if all_closed:
-                # === Считаем PnL по всем откупленным уровням ===
-                total_profit_down = 0.0
-                closed_levels = len(st.down_entry_prices)
+                # ====== СЧИТАЕМ PnL ДЛЯ DOWN-СЕССИИ ======
+                pnl_down = None
+                try:
+                    current_usdt = balance_usdt()
+                    if isinstance(current_usdt, (int, float)) and st.down_usdt_total is not None:
+                        pnl_down = current_usdt - st.down_usdt_total
 
-                for entry_price, qty in zip(st.down_entry_prices, st.down_qty_list):
-                    # по логике мы ставили TP = entry * 1.02
-                    tp_price = entry_price * 1.02
-                    total_profit_down += (tp_price - entry_price) * qty
+                        # общий счётчик сделок (считаем весь DOWN как одну "сессию")
+                        st.total_trades += 1
+                        st.total_pnl += pnl_down
 
-                # Обновляем общую статистику
-                st.total_trades += closed_levels
-                st.profit_trades += closed_levels  # уровни DOWN всегда с положительным TP
-                st.total_pnl += total_profit_down
+                        # обновляем DOWN-статистику
+                        st.levels_down_closed += st.down_levels_completed
+                        st.total_pnl_down += pnl_down
 
-                # Обновляем DOWN-статистику
-                st.levels_down_closed += closed_levels
-                st.total_pnl_down += total_profit_down
-                st.wins_down += closed_levels
+                        if pnl_down >= 0:
+                            st.profit_trades += 1
+                            st.wins_down += 1
+                        else:
+                            st.loss_trades += 1
+                            st.losses_down += 1
 
-                # сохраняем в stats.json
-                save_stats_to_file()
+                        print(
+                            f"[DOWN STATS] levels={st.down_levels_completed}, "
+                            f"start_usdt={st.down_usdt_total}, "
+                            f"end_usdt={current_usdt}, pnl={pnl_down}"
+                        )
+
+                        # сохраняем в JSON
+                        save_stats_to_file()
+
+                except Exception as e:
+                    print("DOWN stats calc error:", e)
+
+                # Сообщение в Telegram
+                if pnl_down is not None:
+                    text_pnl = f"{round(pnl_down, 4)} USDT"
+                else:
+                    text_pnl = "н/д"
 
                 await bot.send_message(
                     chat_id,
                     "🎯 Все уровни DOWN закрыты по TP\n"
-                    "Возвращаемся в UP ⬆️"
+                    f"Уровней было откуплено : *{st.down_levels_completed}*\n"
+                    f"PnL по DOWN-сессии : *{text_pnl}*\n\n"
+                    "Возвращаемся в UP ⬆️",
+                    parse_mode="Markdown"
                 )
 
+                # Сбрасываем состояние DOWN
                 reset_down_vars()
 
+                # Возвращаемся в UP-режим
                 from strategy.up_cycle import strategy_cycle
                 st.strategy_running = True
                 st.strategy_task = asyncio.create_task(strategy_cycle(chat_id, bot))

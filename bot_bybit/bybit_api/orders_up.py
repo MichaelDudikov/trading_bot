@@ -44,7 +44,7 @@ def buy_strk() -> str:
     fee_strk = 0.0
     order_row = None
 
-    for _ in range(6):
+    for _ in range(3):
         history = client.get_order_history(
             category="spot",
             orderId=order_id,
@@ -70,7 +70,7 @@ def buy_strk() -> str:
         if avg_price not in [None, "", "0"] and qty_base not in [None, "", "0"]:
             break
 
-        time.sleep(0.3)
+        time.sleep(0.8)
 
     if not avg_price or not qty_base:
         return "❌ Не удалось получить данные сделки (avgPrice / qty) после 6 попыток"
@@ -159,7 +159,8 @@ def sell_strk() -> str:
     print("SELL market order:", order)
 
     # --- Попытка посчитать PnL, если есть цена входа вверх ---
-    avg_sell_price = None
+    pnl: float | None = None
+    avg_sell_price: float | None = None
     qty_exec = None
 
     try:
