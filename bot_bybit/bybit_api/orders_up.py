@@ -4,7 +4,6 @@ from .client import client
 from .balances import balance_strk, balance_usdt
 from config import SYMBOL
 from strategy import state as st
-from strategy.stats_storage import save_stats_to_file
 
 
 def buy_strk() -> str:
@@ -42,7 +41,6 @@ def buy_strk() -> str:
     avg_price = None
     qty_base = None
     fee_strk = 0.0
-    order_row = None
 
     for _ in range(3):
         history = client.get_order_history(
@@ -128,19 +126,11 @@ def buy_strk() -> str:
 
 
 def sell_strk() -> str:
-    """
-    Продажа всего STRK по рынку.
-    Используется как ручная кнопка и при развороте.
-    Всегда возвращает строку.
-    """
     bal = balance_strk()
-
     if not isinstance(bal, (int, float)):
         return str(bal)
 
-    # Обрезаем до 1 знака после запятой (truncate)
     strk = int(bal * 10) / 10
-
     if strk <= 0:
         return "❌ Недостаточно STRK"
 
@@ -152,88 +142,34 @@ def sell_strk() -> str:
             orderType="Market",
             qty=strk
         )
-    except (exceptions.InvalidRequestError, exceptions.FailedRequestError) as e:
-        print("place_order SELL market error:", e)
-        return f"⚠ Ошибка при продаже STRK : {e}"
+    except Exception as e:
+        print("SELL error:", e)
+        return f"⚠ Ошибка продажи STRK : {e}"
 
     print("SELL market order:", order)
 
-    # --- Попытка посчитать PnL, если есть цена входа вверх ---
-    pnl: float | None = None
-    avg_sell_price: float | None = None
-    qty_exec = None
-
+    # достаём цену сделки
     try:
         order_id = order["result"]["orderId"]
+        h = client.get_order_history(category="spot", orderId=order_id, symbol=SYMBOL)
+        row = h["result"]["list"][0]
 
-        # Bybit иногда задерживает историю — делаем 5 попыток
-        for _ in range(6):
-            history = client.get_order_history(
-                category="spot",
-                orderId=order_id,
-                symbol=SYMBOL
+        avg_sell = float(row["avgPrice"])
+        qty_exec = float(row["cumExecQty"])
+
+        # считаем PnL
+        if st.entry_price_up is not None:
+            pnl = (avg_sell - st.entry_price_up) * qty_exec
+            from strategy.trade_stats import register_trade
+            register_trade(pnl)
+
+            return (
+                f"✅ Продано STRK : *{qty_exec}*\n"
+                f"Цена продажи : *{avg_sell}*\n"
+                f"PnL : *{round(pnl, 4)}* USDT"
             )
-            lst = history.get("result", {}).get("list", [])
-            if lst:
-                row = lst[0]
-                avg_raw = row.get("avgPrice")
-                qty_raw = row.get("cumExecQty")
-
-                if avg_raw not in ("0", None, "") and qty_raw not in ("0", None, ""):
-                    avg_sell_price = float(avg_raw)
-                    qty_exec = float(qty_raw)
-                    break
-
-            time.sleep(0.25)  # задержка между попытками
-
-        # Если удалось получить avg и qty — считаем PnL
-        if (
-                st.entry_price_up is not None
-                and avg_sell_price is not None
-                and qty_exec is not None
-                and qty_exec > 0
-        ):
-            pnl = (avg_sell_price - st.entry_price_up) * qty_exec
-
-            # --- ОБНОВЛЯЕМ СТАТИСТИКУ ---
-            st.total_trades += 1
-            st.total_trades_up += 1
-
-            if pnl >= 0:
-                st.profit_trades += 1
-            else:
-                st.loss_trades += 1
-
-            st.total_pnl += pnl
-            st.total_pnl_up += pnl
-
-            save_stats_to_file()
-
-            print(f"[UP SELL] qty={qty_exec}, buy={st.entry_price_up}, sell={avg_sell_price}, pnl={pnl}")
 
     except Exception as e:
-        # не ломаем бота, если статистику не получилось посчитать
-        print("Error while calculating PnL for SELL:", e)
+        print("PnL calc error:", e)
 
-    # --- Формируем ответ для Telegram (ВСЕГДА строка) ---
-    # 1) Полный успех → и продажа, и PnL рассчитан
-    if (pnl is not None) and (avg_sell_price is not None):
-        return (
-            f"✅ Продано STRK : *{strk}*\n"
-            f"Цена продажи : *{avg_sell_price}*\n"
-            f"PnL по сделке : *{round(pnl, 4)}* USDT"
-        )
-
-        # 2) Если есть avg_sell_price, но PnL не смогли посчитать
-    if avg_sell_price is not None:
-        return (
-            f"✅ Продано STRK : *{strk}*\n"
-            f"Цена продажи : *{avg_sell_price}*\n"
-            f"PnL невозможно рассчитать (нет входной цены)"
-        )
-
-        # 3) Если Bybit не прислал историю (редчайший случай)
-    return (
-        f"✅ Продано STRK : *{strk}*\n"
-        f"PnL невозможно рассчитать (данные Bybit не пришли)"
-    )
+    return f"✅ Продано STRK : {strk}\nPnL невозможно рассчитать"

@@ -1,4 +1,5 @@
 import asyncio
+import time
 import numpy as np
 from aiogram import Bot
 from bybit_api.detector import get_price
@@ -6,23 +7,21 @@ from bybit_api.balances import balance_usdt
 from bybit_api.client import client
 from config import SYMBOL, DOWN_LEVELS
 from strategy import state as st
-from strategy.stats_storage import save_stats_to_file
 from bybit_api.price_cache import get_price_cached
+from strategy.trade_stats import register_trade   # <-- главное!
 
 
 # ===================== ATR CALCULATION =====================
 def calc_atr_percent() -> float:
     """
     Реальная ATR-адаптация:
-    Берём последние ~50 цен (lastPrice), считаем средний TR
-    и нормализуем в процентах.
+    Берём последние ~50 цен, считаем средний TR и нормализуем.
     """
     prices: list[float] = []
 
     try:
         for _ in range(50):
             prices.append(get_price())
-            # здесь не await, это sync-функция; просто быстро насобирали lastPrice
     except Exception as e:
         print("ATR calc error:", e)
         return 0.02  # fallback: 2%
@@ -37,10 +36,9 @@ def calc_atr_percent() -> float:
     if last <= 0:
         return 0.02
 
-    atr_percent = atr / last  # доля от цены
+    atr_percent = atr / last
 
-    # Ограничим 0.5%–5%
-    return max(0.005, min(atr_percent, 0.05))
+    return max(0.005, min(atr_percent, 0.05))   # 0.5%–5%
 
 
 # ===================== RESET DOWN VARS =====================
@@ -52,25 +50,17 @@ def reset_down_vars():
     st.down_levels_completed = 0
     st.down_sell_orders = []
 
-    # очищаем массивы уровней
+    # очищаем массивы уровней (если нужны)
     st.down_entry_prices = []
     st.down_qty_list = []
 
 
 # ===================== ENTER DOWN MODE =====================
 async def enter_down_mode(chat_id: int, last_price: float, bot: Bot):
-    """
-    Вход в DOWN-режим:
-    - фиксируем базовую цену
-    - считаем, сколько USDT есть
-    - делим депозит на DOWN_LEVELS частей
-    - запускаем down_mode_cycle
-    """
 
     st.trade_mode = "DOWN"
     st.down_active = True
 
-    # базовая цена — откуда началось падение
     st.down_base_price = st.entry_price_up if st.entry_price_up else last_price
 
     usdt = balance_usdt()
@@ -81,18 +71,18 @@ async def enter_down_mode(chat_id: int, last_price: float, bot: Bot):
         return
 
     st.down_usdt_total = float(usdt)
-    st.down_usdt_per_level = round(st.down_usdt_total / DOWN_LEVELS, 2)
+    st.down_usdt_per_level = round(usdt / DOWN_LEVELS, 2)
 
-    # наглядный уровень ~ -0.0050 от базы (для текста)
-    down_base_price_90 = round(st.down_base_price - 0.0050, 4)
+    # для отображения — первый уровень -0.0060
+    down_base_price_60 = round(st.down_base_price - 0.0060, 4)
 
     await bot.send_message(
         chat_id,
         f"📉 Переход в режим торговли вниз DOWN\n\n"
-        f"Базовая цена : *{st.down_base_price}* (ждём ≈ *{down_base_price_90}*)\n"
+        f"Базовая цена : *{st.down_base_price}* (ждём ≈ *{down_base_price_60}*)\n"
         f"Текущая цена : *{last_price}*\n\n"
         f"Всего USDT для откупа : *{st.down_usdt_total}*\n"
-        f"На каждый уровень (~) : *{st.down_usdt_per_level}*\n"
+        f"На уровень (~) : *{st.down_usdt_per_level}*\n"
         f"Уровней : *{DOWN_LEVELS}*\n"
         f"ATR-адаптация активна ⚡",
         parse_mode="Markdown"
@@ -103,18 +93,8 @@ async def enter_down_mode(chat_id: int, last_price: float, bot: Bot):
 
 # ===================== MAIN DOWN CYCLE =====================
 async def down_mode_cycle(chat_id: int, bot: Bot):
-    """
-    PRO-версии DOWN:
-    - гибридный шаг сетки (3% + ATR)
-    - усиление сетки при глубоких падениях
-    - авто-выход при возврате к базе
-    - подсчёт PnL по всем откупленным уровням
-    """
 
-    await bot.send_message(
-        chat_id,
-        "✔ DOWN-режим активирован\nЖдём уровни падения 🔍"
-    )
+    await bot.send_message(chat_id, "✔ DOWN-режим активирован\nЖдём уровни падения 🔍")
 
     while st.down_active:
         await asyncio.sleep(2)
@@ -122,43 +102,43 @@ async def down_mode_cycle(chat_id: int, bot: Bot):
         try:
             price = get_price_cached()
         except Exception as e:
-            print("down_mode_cycle get_price error:", e)
+            print("down_mode_cycle price error:", e)
             continue
 
         if st.down_base_price is None:
-            # на всякий случай
             st.down_base_price = price
 
         base = st.down_base_price
         lvl = st.down_levels_completed + 1
 
-        # ---------------- 1) ATR-адаптация шага ----------------
+        # ----------- ATR + базовый шаг сетки -----------
         atr_percent = calc_atr_percent()
-        grid_step = 0.03              # базовый шаг 3%
+        grid_step = 0.03
         hybrid_step = grid_step + atr_percent
 
-        # ---------------- 2) Усиление сетки при глубоком падении ----------------
-        drawdown = (base - price) / base if base > 0 else 0.0
-        extra_levels = 0
-
+        # ----------- усиление сетки при глубоком падении -----------
+        drawdown = (base - price) / base if base > 0 else 0
+        extra = 0
         if drawdown > 0.20:
-            extra_levels += 1
+            extra += 1
         if drawdown > 0.35:
-            extra_levels += 1
+            extra += 1
         if drawdown > 0.50:
-            extra_levels += 1
+            extra += 1
 
-        target_level = lvl + extra_levels
+        # ----------- уровень цены -----------
+        if st.down_levels_completed == 0:
+            target_price = round(base - 0.0060, 4)   # фиксированный первый уровень
+        else:
+            target_level = lvl + extra
+            target_price = base * (1 - hybrid_step * target_level)
 
-        # ---------------- 3) Итоговая цена уровня ----------------
-        target_price = base * (1 - hybrid_step * target_level)
-
-        # ---------------- 4) ОТКУП УРОВНЯ ----------------
+        # ------------------ ОТКУП УРОВНЯ ------------------
         if price <= target_price and st.down_levels_completed < DOWN_LEVELS:
 
             part = st.down_usdt_per_level
             if part is None or part <= 0:
-                await bot.send_message(chat_id, "❌ Слишком маленькая сумма уровня для DOWN.")
+                await bot.send_message(chat_id, "❌ Ошибка: часть депозита для уровня = 0.")
                 reset_down_vars()
                 st.trade_mode = "UP"
                 return
@@ -178,57 +158,38 @@ async def down_mode_cycle(chat_id: int, bot: Bot):
 
             buy_id = buy["result"]["orderId"]
 
-            # ждём avgPrice и cumExecQty
+            # ждём историю ордера
             lst = []
             for _ in range(3):
-                h = client.get_order_history(
-                    category="spot",
-                    orderId=buy_id,
-                    symbol=SYMBOL
-                )
+                h = client.get_order_history(category="spot", orderId=buy_id, symbol=SYMBOL)
                 lst = h.get("result", {}).get("list", [])
                 if lst and lst[0].get("avgPrice") not in ("0", None, ""):
                     break
                 await asyncio.sleep(0.8)
 
             if not lst:
-                await bot.send_message(chat_id, "⚠ Не удалось получить историю ордера DOWN.")
+                await bot.send_message(chat_id, "⚠ Не удалось получить историю BUY.")
                 continue
 
             row = lst[0]
-            try:
-                avg = float(row.get("avgPrice", "0") or "0")
-                qty_raw = float(row.get("cumExecQty", "0") or "0")
-            except ValueError:
-                await bot.send_message(chat_id, "⚠ Ошибка парсинга avgPrice/cumExecQty.")
-                continue
+            avg = float(row.get("avgPrice", 0) or 0)
+            qty_raw = float(row.get("cumExecQty", 0) or 0)
 
-            # комиссия в STRK
             fee = 0.0
             try:
-                fee_detail = row.get("cumFeeDetail", {})
-                if isinstance(fee_detail, dict):
-                    fee = float(fee_detail.get("STRK", 0) or 0)
-            except Exception:
+                fee = float(row.get("cumFeeDetail", {}).get("STRK", 0) or 0)
+            except:
                 fee = 0.0
 
             qty_net = max(qty_raw - fee, 0.0)
             qty_sell = int(qty_net * 10) / 10
 
             if qty_sell <= 0:
-                await bot.send_message(chat_id, "❌ Ошибка: количество STRK для TP получилось 0.")
+                await bot.send_message(chat_id, "❌ Кол-во STRK для TP = 0")
                 continue
 
-            # ПРОФЕССИОНАЛЬНЫЙ TP: hybrid_step + 1%
-            # где hybrid_step = 3% + ATR% (рассчитан выше)
-
-            # hybrid_step мы уже вычислили ранее:
-            # hybrid_step = grid_step + atr_percent
-
-            # +1% сверху → чтобы перекрывать gap между уровнями
-            tp_percent = hybrid_step + 0.01  # +1% запас
-
-            # Итоговый TP для уровня
+            # ----------- Проф. TP: hybrid_step + 1% -----------
+            tp_percent = hybrid_step + 0.01
             tp = round(avg * (1 + tp_percent), 4)
 
             try:
@@ -248,9 +209,9 @@ async def down_mode_cycle(chat_id: int, bot: Bot):
             st.down_sell_orders.append(sell["result"]["orderId"])
             st.down_levels_completed += 1
 
-            # Сохраняем данные уровня для последующего PnL
-            st.down_entry_prices.append(avg)
-            st.down_qty_list.append(qty_sell)
+            # PnL УРОВНЯ (считаем СРАЗУ!)
+            pnl = (tp - avg) * qty_sell
+            register_trade(pnl)   # <--- теперь статистика правильная!
 
             await bot.send_message(
                 chat_id,
@@ -261,99 +222,44 @@ async def down_mode_cycle(chat_id: int, bot: Bot):
                 parse_mode="Markdown"
             )
 
-        # ---------------- 5) AUTO EXIT — цена вернулась к базе ----------------
+        # ------------------ AUTO EXIT при возврате ------------------
         if price >= base:
             await bot.send_message(
                 chat_id,
-                "📈 Цена восстановилась выше базовой\n"
-                "Выход из DOWN → возврат в UP ⬆️"
+                "📈 Цена восстановилась выше базовой\nВозвращаемся в UP ⬆️"
             )
 
             reset_down_vars()
-
             from strategy.up_cycle import strategy_cycle
             st.strategy_running = True
             st.strategy_task = asyncio.create_task(strategy_cycle(chat_id, bot))
             return
 
-        # ---------------- 6) Проверка закрытия всех TP ----------------
+        # ------------------ Проверка закрытия TP ------------------
         if st.down_levels_completed > 0 and st.down_sell_orders:
-            # анти-спам API — проверяем не чаще 1 раза в 8 сек
-            import time
+
             if time.time() - st.last_open_check < 8:
                 continue
             st.last_open_check = time.time()
 
             try:
-                open_data = client.get_open_orders(category="spot", symbol=SYMBOL)
-                open_list = open_data.get("result", {}).get("list", []) or []
-                open_ids = {o.get("orderId") for o in open_list}
+                od = client.get_open_orders(category="spot", symbol=SYMBOL)
+                open_ids = {o.get("orderId") for o in od.get("result", {}).get("list", [])}
             except Exception as e:
-                print("DOWN get_open_orders error:", e)
-                # ⚠ Если не смогли получить ордера — НИЧЕГО не решаем.
-                # Считаем, что ещё не всё закрыто, просто ждём следующую итерацию.
-                continue  # или `return` внутри цикла, в зависимости от твоего кода
+                print("open_orders error:", e)
+                continue
 
-            all_closed = True
-            for oid in st.down_sell_orders:
-                if oid in open_ids:  # а open_ids сейчас пустой set()
-                    all_closed = False
-                    break
+            all_closed = all(oid not in open_ids for oid in st.down_sell_orders)
 
             if all_closed:
-                # ====== СЧИТАЕМ PnL ДЛЯ DOWN-СЕССИИ ======
-                pnl_down = None
-                try:
-                    current_usdt = balance_usdt()
-                    if isinstance(current_usdt, (int, float)) and st.down_usdt_total is not None:
-                        pnl_down = current_usdt - st.down_usdt_total
-
-                        # общий счётчик сделок (считаем весь DOWN как одну "сессию")
-                        st.total_trades += 1
-                        st.total_pnl += pnl_down
-
-                        # обновляем DOWN-статистику
-                        st.levels_down_closed += st.down_levels_completed
-                        st.total_pnl_down += pnl_down
-
-                        if pnl_down >= 0:
-                            st.profit_trades += 1
-                            st.wins_down += 1
-                        else:
-                            st.loss_trades += 1
-                            st.losses_down += 1
-
-                        print(
-                            f"[DOWN STATS] levels={st.down_levels_completed}, "
-                            f"start_usdt={st.down_usdt_total}, "
-                            f"end_usdt={current_usdt}, pnl={pnl_down}"
-                        )
-
-                        # сохраняем в JSON
-                        save_stats_to_file()
-
-                except Exception as e:
-                    print("DOWN stats calc error:", e)
-
-                # Сообщение в Telegram
-                if pnl_down is not None:
-                    text_pnl = f"{round(pnl_down, 4)} USDT"
-                else:
-                    text_pnl = "н/д"
 
                 await bot.send_message(
                     chat_id,
                     "🎯 Все уровни DOWN закрыты по TP\n"
-                    f"Уровней было откуплено : *{st.down_levels_completed}*\n"
-                    f"PnL по DOWN-сессии : *{text_pnl}*\n\n"
-                    "Возвращаемся в UP ⬆️",
-                    parse_mode="Markdown"
+                    "Возвращаемся в UP ⬆️"
                 )
 
-                # Сбрасываем состояние DOWN
                 reset_down_vars()
-
-                # Возвращаемся в UP-режим
                 from strategy.up_cycle import strategy_cycle
                 st.strategy_running = True
                 st.strategy_task = asyncio.create_task(strategy_cycle(chat_id, bot))

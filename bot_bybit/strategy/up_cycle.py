@@ -1,6 +1,5 @@
 import asyncio
 from aiogram import Bot
-from pybit import exceptions
 from bybit_api.detector import get_active_limit_sell_order
 from bybit_api.balances import balance_usdt
 from bybit_api.orders_up import buy_strk, sell_strk
@@ -8,8 +7,8 @@ from bybit_api.client import client
 from strategy import state as st
 from config import DRAWDOWN_TRIGGER, SYMBOL
 from strategy.down_cycle import enter_down_mode
-from strategy.stats_storage import save_stats_to_file
 from bybit_api.price_cache import get_price_cached
+from strategy.trade_stats import register_trade   # <-- ТОЛЬКО ЭТО считаем статистикой!
 
 
 # ===========================================================
@@ -17,8 +16,8 @@ from bybit_api.price_cache import get_price_cached
 # ===========================================================
 def _update_up_stats_after_tp():
     """
-    Вызывается в момент, когда лимитный ордер (TP) исчез.
-    Рассчитываем profit и обновляем статистику.
+    TP пропал → TP исполнен.
+    Нужно получить avgPrice и qty, посчитать PnL и записать как сделку.
     """
 
     try:
@@ -33,17 +32,19 @@ def _update_up_stats_after_tp():
 
     o = lst[0]
 
-    # Интересует последний полностью закрытый SELL LIMIT TP
+    # Это должен быть SELL LIMIT TP
     if o.get("side") != "Sell" or o.get("orderType") != "Limit":
         return
-    if o.get("orderStatus") not in ("Filled", "PartiallyFilled", "PartiallyFilledCanceled", "PartiallyFilledCanceledByUser"):
+
+    if o.get("orderStatus") not in ("Filled", "PartiallyFilled",
+                                    "PartiallyFilledCanceled", "PartiallyFilledCanceledByUser"):
         return
 
     order_id = o.get("orderId")
     if order_id is None:
         return
 
-    # Защита: чтобы один и тот же TP не засчитывался дважды
+    # Чтобы TP не засчитывался дважды
     if st.last_up_tp_order_id == order_id:
         return
 
@@ -57,33 +58,15 @@ def _update_up_stats_after_tp():
         return
 
     entry = st.entry_price_up
-    profit = (tp_price - entry) * qty
+    pnl = (tp_price - entry) * qty
 
-    # ---- Обновляем общую статистику ----
-    st.total_trades += 1
-    if profit >= 0:
-        st.profit_trades += 1
-    else:
-        st.loss_trades += 1
+    # --- РЕГИСТРАЦИЯ СДЕЛКИ В ОБЩЕЙ СТАТИСТИКЕ ---
+    register_trade(pnl)
 
-    st.total_pnl += profit
-
-    # ---- Обновляем UP-статистику ----
-    st.total_trades_up += 1
-    st.total_pnl_up += profit
-    if profit >= 0:
-        st.wins_up += 1
-    else:
-        st.losses_up += 1
-
-    # Помечаем этот TP, чтобы не считать дважды
+    # Помечаем TP, чтобы не считать повторно
     st.last_up_tp_order_id = order_id
 
-    print(f"[UP STATS] TP order {order_id}: entry={entry}, tp={tp_price}, qty={qty}, pnl={profit}")
-
-    # === ВАЖНО ===
-    # Сохраняем статистику в stats.json
-    save_stats_to_file()
+    print(f"[UP STATS] TP order {order_id}: entry={entry}, tp={tp_price}, qty={qty}, pnl={pnl}")
 
 
 # ===========================================================
@@ -91,28 +74,28 @@ def _update_up_stats_after_tp():
 # ===========================================================
 async def strategy_cycle(chat_id: int, bot: Bot):
     """
-    Цикл BUY → TP → BUY → TP, пока не произойдёт разворот вниз.
+    Стратегия BUY → TP → BUY → TP … пока не произойдёт разворот.
     """
+
     while st.strategy_running:
 
-        # 1) Ждём исчезновения лимитки (значит TP исполнен)
+        # --- 1) ЖДЁМ ИСЧЕЗНОВЕНИЯ ЛИМИТКИ ---
         while st.strategy_running:
 
             active = get_active_limit_sell_order()
-            if not active:
-                break  # TP исчез -> TP исполнен
+            if not active:   # лимитка исчезла → TP исполнен
+                break
 
-            # --- Детектор разворота вниз ---
+            # --- Проверка разворота вниз ---
             if st.trade_mode == "UP" and st.entry_price_up is not None:
 
                 try:
                     last_price = get_price_cached()
-                except (exceptions.InvalidRequestError, exceptions.FailedRequestError):
+                except:
                     last_price = None
 
                 if last_price is not None:
 
-                    # если цена упала ниже точки входа на DRAWDOWN_TRIGGER
                     if last_price <= st.entry_price_up - DRAWDOWN_TRIGGER:
 
                         await bot.send_message(
@@ -121,7 +104,8 @@ async def strategy_cycle(chat_id: int, bot: Bot):
                             f"Цена входа : *{st.entry_price_up}*\n"
                             f"Текущая цена : *{last_price}*\n"
                             f"Падение на *{round(st.entry_price_up - last_price, 5)}*",
-                            parse_mode="Markdown")
+                            parse_mode="Markdown"
+                        )
 
                         # отменяем лимитку
                         try:
@@ -133,27 +117,27 @@ async def strategy_cycle(chat_id: int, bot: Bot):
                         except Exception as e:
                             print("cancel_order (reversal) error:", e)
 
-                        # продаём STRK по рынку
+                        # продаём STRK рыночным ордером
                         sell_msg = sell_strk()
                         await bot.send_message(chat_id, sell_msg, parse_mode="Markdown")
 
                         # выключаем UP
                         st.strategy_running = False
 
-                        # передаём управление DOWN-режиму
+                        # включаем DOWN
                         await enter_down_mode(chat_id, last_price, bot)
                         return
 
             await asyncio.sleep(5)
 
-        # Если UP-стратегия выключена — прекращаем цикл
+        # если UP выключился выше — выходим
         if not st.strategy_running:
             break
 
-        # === TP полностью закрыт — обновляем статистику ===
+        # --- 2) TP исполнен → считаем PnL ---
         _update_up_stats_after_tp()
 
-        # 2) Проверяем баланс USDT перед новой покупкой
+        # --- 3) Проверяем баланс ---
         usdt = balance_usdt()
         if not isinstance(usdt, (int, float)):
             await bot.send_message(chat_id, f"❌ Ошибка получения баланса USDT :\n{usdt}")
@@ -161,14 +145,14 @@ async def strategy_cycle(chat_id: int, bot: Bot):
             break
 
         if int(usdt) <= 0:
-            await bot.send_message(chat_id, "❌ Недостаточно USDT для новой сделки. Стратегия остановлена.")
+            await bot.send_message(chat_id, "❌ Недостаточно USDT. Стратегия остановлена.")
             st.strategy_running = False
             break
 
-        # 3) Совершаем новую покупку
+        # --- 4) Открываем новую сделку UP ---
         await bot.send_message(
             chat_id,
-            "♻️ TP исполнен или лимитка отсутствует\n"
+            "♻️ TP исполнен или лимитки нет\n"
             "Открываю новую сделку на покупку ⬇️"
         )
 

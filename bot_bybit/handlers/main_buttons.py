@@ -128,35 +128,20 @@ async def btn_sell_strk(message: types.Message):
 
 # 📊 Статистика
 @router.message(Command("stats"))
-async def cmd_stats(message: types.Message):
-
-    total = st.total_trades
-    wins = st.profit_trades
-    losses = st.loss_trades
-
-    if wins + losses > 0:
-        win_rate = round(wins / (wins + losses) * 100, 1)
+async def stats_handler(message: types.Message):
+    if st.total_trades == 0:
+        winrate = 0
     else:
-        win_rate = 0.0
+        winrate = round(st.profit_trades / st.total_trades * 100, 2)
 
-    text = f"""
-📊 *Статистика торговли*
-
-Всего сделок : *{total}*
-Прибыльных : *{wins}*
-Убыточных : *{losses}*
-Win rate : *{win_rate}%*
-
-Общий PnL : *{round(st.total_pnl, 4)} USDT*
-
-🔵 *UP-стратегия*
-• Сделок : *{st.total_trades_up}*
-• PnL : *{round(st.total_pnl_up, 4)} USDT*
-
-🟡 *DOWN-стратегия*
-• Уровней закрыто : *{st.levels_down_closed}*
-• PnL : *{round(st.total_pnl_down, 4)} USDT*
-"""
+    text = (
+        "📊 *Статистика торговли*\n\n"
+        f"Всего сделок : *{st.total_trades}*\n"
+        f"Прибыльных : *{st.profit_trades}*\n"
+        f"Убыточных : *{st.loss_trades}*\n"
+        f"Win Rate : *{winrate}%*\n\n"
+        f"Общий PnL : *{round(st.total_pnl, 4)} USDT*"
+    )
 
     # перед показом — сохраним статистику в файл
     save_stats_to_file()
