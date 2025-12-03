@@ -9,7 +9,8 @@ from strategy import state as st
 from strategy.up_cycle import strategy_cycle
 from strategy.down_cycle import reset_down_vars
 from strategy.stats_storage import save_stats_to_file, reset_stats
-from config import DOWN_LEVELS, DOWN_STEP
+from config import DOWN_LEVELS
+from bybit_api.price_cache import get_price_cached
 
 
 router = Router()
@@ -139,7 +140,7 @@ async def stats_handler(message: types.Message):
         f"Всего сделок : *{st.total_trades}*\n"
         f"Прибыльных : *{st.profit_trades}*\n"
         f"Убыточных : *{st.loss_trades}*\n"
-        f"Win Rate : *{winrate}%*\n\n"
+        f"Win Rate : *{winrate} %*\n\n"
         f"Общий PnL : *{round(st.total_pnl, 4)} USDT*"
     )
 
@@ -158,36 +159,34 @@ async def on_stats_clear(callback: types.CallbackQuery):
 
 @router.message(Command("down"))
 async def cmd_down(message: types.Message):
-    # Если DOWN выключен
-    if not st.down_active:
-        text = "DOWN-режим : ❌ не активен\n"
-        if st.down_base_price:
-            text += f"Последняя базовая цена : *{st.down_base_price}*\n"
-        await message.answer(text, parse_mode="Markdown")
+
+    if not st.down_active or st.down_base_price is None:
+        await message.answer("DOWN-режим : ❌ не активен")
         return
 
-    # Если DOWN включен
-    # Текущая цена
-    try:
-        last_price = get_price()
-    except:
-        last_price = None
+    base = st.down_base_price
+    current_price = get_price_cached()
 
-    base = st.down_base_price or 0
+    # 1-й уровень: -0.0060 от базы
+    lvl1 = round(base - 0.0060, 4)
+    # остальные уровни: шаг 0.0050 от предыдущего
+    lvl2 = round(lvl1 - 0.0050, 4)
+    lvl3 = round(lvl2 - 0.0050, 4)
+    lvl4 = round(lvl3 - 0.0050, 4)
+    lvl5 = round(lvl4 - 0.0050, 4)
 
-    text = "*DOWN-режим активен* ✅\n\n"
-    text += f"Базовая цена : *{base}*\n"
-    if last_price:
-        text += f"Текущая цена : *{last_price}*\n\n"
-
-    text += "Уровни :\n"
-
-    for lvl in range(1, DOWN_LEVELS + 1):
-        level_price = round(base - DOWN_STEP * lvl, 4)
-        text += f"{lvl} уровень : *{level_price}*\n"
-
-    text += "\n"
-    text += f"Откупов выполнено : *{st.down_levels_completed}/{DOWN_LEVELS}*\n"
-    text += f"Ордера TP выставлены : *{len(st.down_sell_orders)}*\n"
+    text = (
+        "*DOWN-режим активен* ✅\n\n"
+        f"Базовая цена : *{base}*\n"
+        f"Текущая цена : *{current_price}*\n\n"
+        "Уровни :\n"
+        f"1 уровень : *{lvl1}*\n"
+        f"2 уровень : *{lvl2}*\n"
+        f"3 уровень : *{lvl3}*\n"
+        f"4 уровень : *{lvl4}*\n"
+        f"5 уровень : *{lvl5}*\n\n"
+        f"Откупов выполнено : *{st.down_levels_completed}/{DOWN_LEVELS}*\n"
+        f"Ордера TP выставлены : *{len(st.down_sell_orders)}*"
+    )
 
     await message.answer(text, parse_mode="Markdown")

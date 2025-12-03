@@ -16,10 +16,9 @@ from strategy.trade_stats import register_trade   # <-- ТОЛЬКО ЭТО сч
 # ===========================================================
 def _update_up_stats_after_tp():
     """
-    TP пропал → TP исполнен.
-    Нужно получить avgPrice и qty, посчитать PnL и записать как сделку.
+    Вызывается в момент, когда лимитный ордер (TP) исчез.
+    Смотрим последний SELL-Limit в истории и считаем PnL.
     """
-
     try:
         history = client.get_order_history(category="spot", symbol=SYMBOL)
     except Exception as e:
@@ -32,20 +31,23 @@ def _update_up_stats_after_tp():
 
     o = lst[0]
 
-    # Это должен быть SELL LIMIT TP
+    # Интересует последний полностью закрытый SELL LIMIT TP
     if o.get("side") != "Sell" or o.get("orderType") != "Limit":
         return
-
-    if o.get("orderStatus") not in ("Filled", "PartiallyFilled",
-                                    "PartiallyFilledCanceled", "PartiallyFilledCanceledByUser"):
+    if o.get("orderStatus") not in (
+        "Filled",
+        "PartiallyFilled",
+        "PartiallyFilledCanceled",
+        "PartiallyFilledCanceledByUser",
+    ):
         return
 
     order_id = o.get("orderId")
     if order_id is None:
         return
 
-    # Чтобы TP не засчитывался дважды
-    if st.last_up_tp_order_id == order_id:
+    # Если уже учитывали этот TP — выходим
+    if getattr(st, "last_up_tp_order_id", None) == order_id:
         return
 
     try:
@@ -58,15 +60,15 @@ def _update_up_stats_after_tp():
         return
 
     entry = st.entry_price_up
-    pnl = (tp_price - entry) * qty
+    profit = (tp_price - entry) * qty
 
-    # --- РЕГИСТРАЦИЯ СДЕЛКИ В ОБЩЕЙ СТАТИСТИКЕ ---
-    register_trade(pnl)
+    # Учёт сделки
+    register_trade(profit)
 
-    # Помечаем TP, чтобы не считать повторно
+    # Запоминаем, что этот TP уже учли
     st.last_up_tp_order_id = order_id
 
-    print(f"[UP STATS] TP order {order_id}: entry={entry}, tp={tp_price}, qty={qty}, pnl={pnl}")
+    print(f"[UP STATS] TP order {order_id}: entry={entry}, tp={tp_price}, qty={qty}, pnl={profit}")
 
 
 # ===========================================================
@@ -135,7 +137,11 @@ async def strategy_cycle(chat_id: int, bot: Bot):
             break
 
         # --- 2) TP исполнен → считаем PnL ---
-        _update_up_stats_after_tp()
+        # === TP полностью закрыт — обновляем статистику (с защитой от ошибок) ===
+        try:
+            _update_up_stats_after_tp()
+        except Exception as e:
+            print("UP stats error:", e)
 
         # --- 3) Проверяем баланс ---
         usdt = balance_usdt()
