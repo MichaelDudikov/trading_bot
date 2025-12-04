@@ -83,6 +83,7 @@ def buy_strk() -> str:
     # 3) Сохраняем цену входа для детектора разворота
     st.trade_mode = "UP"
     st.entry_price_up = avg_price
+    st.reversal_detected = False
 
     # 4) Чистое количество STRK после комиссии
     net_qty = max(qty_base - fee_strk, 0.0)

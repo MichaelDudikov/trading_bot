@@ -1,12 +1,15 @@
 import asyncio
 from aiogram import Bot
+
 from bybit_api.detector import get_active_limit_sell_order
 from bybit_api.balances import balance_usdt
 from bybit_api.orders_up import buy_strk, sell_strk
 from bybit_api.client import client
+
 from strategy import state as st
-from config import DRAWDOWN_TRIGGER, SYMBOL
 from strategy.down_cycle import enter_down_mode
+
+from config import DRAWDOWN_TRIGGER, SYMBOL
 from bybit_api.price_cache import get_price_cached
 from strategy.trade_stats import register_trade   # <-- ТОЛЬКО ЭТО считаем статистикой!
 
@@ -30,7 +33,6 @@ def _update_up_stats_after_tp():
         return
 
     o = lst[0]
-
     # Интересует последний полностью закрытый SELL LIMIT TP
     if o.get("side") != "Sell" or o.get("orderType") != "Limit":
         return
@@ -46,7 +48,7 @@ def _update_up_stats_after_tp():
     if order_id is None:
         return
 
-    # Если уже учитывали этот TP — выходим
+    # Если уже учитывали этот TP — выходим, защищаемся от дублирования
     if getattr(st, "last_up_tp_order_id", None) == order_id:
         return
 
@@ -78,7 +80,6 @@ async def strategy_cycle(chat_id: int, bot: Bot):
     """
     Стратегия BUY → TP → BUY → TP … пока не произойдёт разворот.
     """
-
     while st.strategy_running:
 
         # --- 1) ЖДЁМ ИСЧЕЗНОВЕНИЯ ЛИМИТКИ ---
@@ -98,7 +99,14 @@ async def strategy_cycle(chat_id: int, bot: Bot):
 
                 if last_price is not None:
 
-                    if last_price <= st.entry_price_up - DRAWDOWN_TRIGGER:
+                    trigger = st.entry_price_up - DRAWDOWN_TRIGGER
+
+                    # ФАЗА 1. Детектор: фиксируем факт пробоя триггера ---
+                    if last_price <= trigger:
+                        st.reversal_detected = True
+
+                    # ФАЗА 2. Если разворот был зафиксирован — выполняем разворот ---
+                    if st.reversal_detected:
 
                         await bot.send_message(
                             chat_id,
@@ -130,14 +138,13 @@ async def strategy_cycle(chat_id: int, bot: Bot):
                         await enter_down_mode(chat_id, last_price, bot)
                         return
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(4)
 
         # если UP выключился выше — выходим
         if not st.strategy_running:
             break
 
         # --- 2) TP исполнен → считаем PnL ---
-        # === TP полностью закрыт — обновляем статистику (с защитой от ошибок) ===
         try:
             _update_up_stats_after_tp()
         except Exception as e:
