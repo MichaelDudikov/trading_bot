@@ -222,7 +222,7 @@ async def down_mode_cycle(chat_id: int, bot: Bot):
                 parse_mode="Markdown"
             )
 
-        # ------------------ AUTO EXIT при возврате ------------------
+        # ------------------ AUTO EXIT цена вернулась к базе ------------------
         if price >= base:
             await bot.send_message(
                 chat_id,
@@ -230,6 +230,7 @@ async def down_mode_cycle(chat_id: int, bot: Bot):
             )
 
             reset_down_vars()
+
             from strategy.up_cycle import strategy_cycle
             st.strategy_running = True
             st.strategy_task = asyncio.create_task(strategy_cycle(chat_id, bot))
@@ -260,6 +261,7 @@ async def down_mode_cycle(chat_id: int, bot: Bot):
                 )
 
                 reset_down_vars()
+
                 from strategy.up_cycle import strategy_cycle
                 st.strategy_running = True
                 st.strategy_task = asyncio.create_task(strategy_cycle(chat_id, bot))

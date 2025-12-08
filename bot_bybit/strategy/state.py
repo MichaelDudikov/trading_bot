@@ -28,3 +28,5 @@ down_level_entries: list[tuple[float, float]] = []
 last_price_cache = None
 last_price_time = 0
 last_open_check = 0
+
+reversal_detected: bool = False

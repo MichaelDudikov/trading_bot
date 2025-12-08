@@ -9,7 +9,8 @@ from strategy import state as st
 from strategy.up_cycle import strategy_cycle
 from strategy.down_cycle import reset_down_vars
 from strategy.stats_storage import save_stats_to_file, reset_stats
-from config import DOWN_LEVELS, DOWN_STEP
+from config import DOWN_LEVELS
+from bybit_api.price_cache import get_price_cached
 
 
 router = Router()
@@ -139,7 +140,7 @@ async def stats_handler(message: types.Message):
         f"Всего сделок : *{st.total_trades}*\n"
         f"Прибыльных : *{st.profit_trades}*\n"
         f"Убыточных : *{st.loss_trades}*\n"
-        f"Win Rate : *{winrate}%*\n\n"
+        f"Win Rate : *{winrate} %*\n\n"
         f"Общий PnL : *{round(st.total_pnl, 4)} USDT*"
     )
 
@@ -158,36 +159,70 @@ async def on_stats_clear(callback: types.CallbackQuery):
 
 @router.message(Command("down"))
 async def cmd_down(message: types.Message):
-    # Если DOWN выключен
-    if not st.down_active:
-        text = "DOWN-режим : ❌ не активен\n"
-        if st.down_base_price:
-            text += f"Последняя базовая цена : *{st.down_base_price}*\n"
-        await message.answer(text, parse_mode="Markdown")
+
+    if not st.down_active or st.down_base_price is None:
+        await message.answer("DOWN-режим : ❌ не активен")
         return
 
-    # Если DOWN включен
-    # Текущая цена
-    try:
-        last_price = get_price()
-    except:
-        last_price = None
+    base = st.down_base_price
+    current_price = get_price_cached()
 
-    base = st.down_base_price or 0
+    # ------------------------------
+    # ATR для отображения
+    # ------------------------------
+    from strategy.down_cycle import calc_atr_percent
+    atr_percent = calc_atr_percent()
 
-    text = "*DOWN-режим активен* ✅\n\n"
-    text += f"Базовая цена : *{base}*\n"
-    if last_price:
-        text += f"Текущая цена : *{last_price}*\n\n"
+    grid_step = 0.03                      # базовый шаг 3%
+    hybrid_step = grid_step + atr_percent  # итоговый гибридный шаг
 
-    text += "Уровни :\n"
+    levels_text = []
 
+    # ------------------------------
+    # РАСЧЁТ ВСЕХ УРОВНЕЙ 1–N
+    # ------------------------------
     for lvl in range(1, DOWN_LEVELS + 1):
-        level_price = round(base - DOWN_STEP * lvl, 4)
-        text += f"{lvl} уровень : *{level_price}*\n"
 
-    text += "\n"
-    text += f"Откупов выполнено : *{st.down_levels_completed}/{DOWN_LEVELS}*\n"
-    text += f"Ордера TP выставлены : *{len(st.down_sell_orders)}*\n"
+        # --- 1 уровень фиксированный ---
+        if lvl == 1:
+            level_price = round(base - 0.0060, 4)
+
+        else:
+            # оцениваем drawdown (как в down_cycle)
+            try:
+                price_now = get_price_cached()
+            except:
+                price_now = current_price
+
+            if base > 0:
+                drawdown = (base - price_now) / base
+            else:
+                drawdown = 0
+
+            extra = 0
+            if drawdown > 0.20:
+                extra += 1
+            if drawdown > 0.35:
+                extra += 1
+            if drawdown > 0.50:
+                extra += 1
+
+            effective_level = lvl + extra
+            level_price = round(base * (1 - hybrid_step * effective_level), 4)
+
+        levels_text.append(f"{lvl} уровень : *{level_price}*")
+
+    # ------------------------------
+    # Формируем ответ
+    # ------------------------------
+    text = (
+        "*DOWN-режим активен* ✅\n\n"
+        f"Базовая цена : *{base}*\n"
+        f"Текущая цена : *{current_price}*\n\n"
+        "Уровни :\n" +
+        "\n".join(levels_text) +
+        f"\n\nОткупов выполнено : *{st.down_levels_completed}/{DOWN_LEVELS}*\n"
+        f"Ордера TP выставлены : *{len(st.down_sell_orders)}*"
+    )
 
     await message.answer(text, parse_mode="Markdown")

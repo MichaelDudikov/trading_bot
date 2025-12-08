@@ -1,12 +1,15 @@
 import asyncio
 from aiogram import Bot
+
 from bybit_api.detector import get_active_limit_sell_order
 from bybit_api.balances import balance_usdt
 from bybit_api.orders_up import buy_strk, sell_strk
 from bybit_api.client import client
+
 from strategy import state as st
-from config import DRAWDOWN_TRIGGER, SYMBOL
 from strategy.down_cycle import enter_down_mode
+
+from config import DRAWDOWN_TRIGGER, SYMBOL
 from bybit_api.price_cache import get_price_cached
 from strategy.trade_stats import register_trade   # <-- ТОЛЬКО ЭТО считаем статистикой!
 
@@ -16,10 +19,9 @@ from strategy.trade_stats import register_trade   # <-- ТОЛЬКО ЭТО сч
 # ===========================================================
 def _update_up_stats_after_tp():
     """
-    TP пропал → TP исполнен.
-    Нужно получить avgPrice и qty, посчитать PnL и записать как сделку.
+    Вызывается в момент, когда лимитный ордер (TP) исчез.
+    Смотрим последний SELL-Limit в истории и считаем PnL.
     """
-
     try:
         history = client.get_order_history(category="spot", symbol=SYMBOL)
     except Exception as e:
@@ -31,21 +33,23 @@ def _update_up_stats_after_tp():
         return
 
     o = lst[0]
-
-    # Это должен быть SELL LIMIT TP
+    # Интересует последний полностью закрытый SELL LIMIT TP
     if o.get("side") != "Sell" or o.get("orderType") != "Limit":
         return
-
-    if o.get("orderStatus") not in ("Filled", "PartiallyFilled",
-                                    "PartiallyFilledCanceled", "PartiallyFilledCanceledByUser"):
+    if o.get("orderStatus") not in (
+        "Filled",
+        "PartiallyFilled",
+        "PartiallyFilledCanceled",
+        "PartiallyFilledCanceledByUser",
+    ):
         return
 
     order_id = o.get("orderId")
     if order_id is None:
         return
-
-    # Чтобы TP не засчитывался дважды
-    if st.last_up_tp_order_id == order_id:
+    
+    # Если уже учитывали этот TP — выходим, защищаемся от дублирования
+    if getattr(st, "last_up_tp_order_id", None) == order_id:
         return
 
     try:
@@ -58,15 +62,15 @@ def _update_up_stats_after_tp():
         return
 
     entry = st.entry_price_up
-    pnl = (tp_price - entry) * qty
+    profit = (tp_price - entry) * qty
 
-    # --- РЕГИСТРАЦИЯ СДЕЛКИ В ОБЩЕЙ СТАТИСТИКЕ ---
-    register_trade(pnl)
+    # Учёт сделки
+    register_trade(profit)
 
-    # Помечаем TP, чтобы не считать повторно
+    # Запоминаем, что этот TP уже учли
     st.last_up_tp_order_id = order_id
 
-    print(f"[UP STATS] TP order {order_id}: entry={entry}, tp={tp_price}, qty={qty}, pnl={pnl}")
+    print(f"[UP STATS] TP order {order_id}: entry={entry}, tp={tp_price}, qty={qty}, pnl={profit}")
 
 
 # ===========================================================
@@ -76,7 +80,6 @@ async def strategy_cycle(chat_id: int, bot: Bot):
     """
     Стратегия BUY → TP → BUY → TP … пока не произойдёт разворот.
     """
-
     while st.strategy_running:
 
         # --- 1) ЖДЁМ ИСЧЕЗНОВЕНИЯ ЛИМИТКИ ---
@@ -96,7 +99,14 @@ async def strategy_cycle(chat_id: int, bot: Bot):
 
                 if last_price is not None:
 
-                    if last_price <= st.entry_price_up - DRAWDOWN_TRIGGER:
+                    trigger = st.entry_price_up - DRAWDOWN_TRIGGER
+
+                    # ФАЗА 1. Детектор: фиксируем факт пробоя триггера ---
+                    if last_price <= trigger:
+                        st.reversal_detected = True
+
+                    # ФАЗА 2. Если разворот был зафиксирован — выполняем разворот ---
+                    if st.reversal_detected:
 
                         await bot.send_message(
                             chat_id,
@@ -128,14 +138,20 @@ async def strategy_cycle(chat_id: int, bot: Bot):
                         await enter_down_mode(chat_id, last_price, bot)
                         return
 
-            await asyncio.sleep(5)
+            # раньше было 4 секунды — из-за этого пропуск разворотов
+            await asyncio.sleep(1.5)
 
         # если UP выключился выше — выходим
         if not st.strategy_running:
             break
 
         # --- 2) TP исполнен → считаем PnL ---
-        _update_up_stats_after_tp()
+        # 2) TP ИСПОЛНЕН — СЧИТАЕМ ТОЛЬКО ЕСЛИ НЕ БЫЛО РАЗВОРОТА
+        if not st.reversal_detected:
+            try:
+                _update_up_stats_after_tp()
+            except Exception as e:
+                print("UP stats error:", e)
 
         # --- 3) Проверяем баланс ---
         usdt = balance_usdt()
