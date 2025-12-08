@@ -47,7 +47,7 @@ def _update_up_stats_after_tp():
     order_id = o.get("orderId")
     if order_id is None:
         return
-
+    
     # Если уже учитывали этот TP — выходим, защищаемся от дублирования
     if getattr(st, "last_up_tp_order_id", None) == order_id:
         return
@@ -138,17 +138,20 @@ async def strategy_cycle(chat_id: int, bot: Bot):
                         await enter_down_mode(chat_id, last_price, bot)
                         return
 
-            await asyncio.sleep(4)
+            # раньше было 4 секунды — из-за этого пропуск разворотов
+            await asyncio.sleep(1.5)
 
         # если UP выключился выше — выходим
         if not st.strategy_running:
             break
 
         # --- 2) TP исполнен → считаем PnL ---
-        try:
-            _update_up_stats_after_tp()
-        except Exception as e:
-            print("UP stats error:", e)
+        # 2) TP ИСПОЛНЕН — СЧИТАЕМ ТОЛЬКО ЕСЛИ НЕ БЫЛО РАЗВОРОТА
+        if not st.reversal_detected:
+            try:
+                _update_up_stats_after_tp()
+            except Exception as e:
+                print("UP stats error:", e)
 
         # --- 3) Проверяем баланс ---
         usdt = balance_usdt()

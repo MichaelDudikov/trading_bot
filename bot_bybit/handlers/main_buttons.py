@@ -167,25 +167,61 @@ async def cmd_down(message: types.Message):
     base = st.down_base_price
     current_price = get_price_cached()
 
-    # 1-й уровень: -0.0060 от базы
-    lvl1 = round(base - 0.0060, 4)
-    # остальные уровни: шаг 0.0050 от предыдущего
-    lvl2 = round(lvl1 - 0.0050, 4)
-    lvl3 = round(lvl2 - 0.0050, 4)
-    lvl4 = round(lvl3 - 0.0050, 4)
-    lvl5 = round(lvl4 - 0.0050, 4)
+    # ------------------------------
+    # ATR для отображения
+    # ------------------------------
+    from strategy.down_cycle import calc_atr_percent
+    atr_percent = calc_atr_percent()
 
+    grid_step = 0.03                      # базовый шаг 3%
+    hybrid_step = grid_step + atr_percent  # итоговый гибридный шаг
+
+    levels_text = []
+
+    # ------------------------------
+    # РАСЧЁТ ВСЕХ УРОВНЕЙ 1–N
+    # ------------------------------
+    for lvl in range(1, DOWN_LEVELS + 1):
+
+        # --- 1 уровень фиксированный ---
+        if lvl == 1:
+            level_price = round(base - 0.0060, 4)
+
+        else:
+            # оцениваем drawdown (как в down_cycle)
+            try:
+                price_now = get_price_cached()
+            except:
+                price_now = current_price
+
+            if base > 0:
+                drawdown = (base - price_now) / base
+            else:
+                drawdown = 0
+
+            extra = 0
+            if drawdown > 0.20:
+                extra += 1
+            if drawdown > 0.35:
+                extra += 1
+            if drawdown > 0.50:
+                extra += 1
+
+            effective_level = lvl + extra
+            level_price = round(base * (1 - hybrid_step * effective_level), 4)
+
+        levels_text.append(f"{lvl} уровень : *{level_price}*")
+
+    # ------------------------------
+    # Формируем ответ
+    # ------------------------------
     text = (
         "*DOWN-режим активен* ✅\n\n"
         f"Базовая цена : *{base}*\n"
         f"Текущая цена : *{current_price}*\n\n"
-        "Уровни :\n"
-        f"1 уровень : *{lvl1}*\n"
-        f"2 уровень : *{lvl2}*\n"
-        f"3 уровень : *{lvl3}*\n"
-        f"4 уровень : *{lvl4}*\n"
-        f"5 уровень : *{lvl5}*\n\n"
-        f"Откупов выполнено : *{st.down_levels_completed}/{DOWN_LEVELS}*\n"
+        "Уровни :\n" +
+        "\n".join(levels_text) +
+        f"\n\nОткупов выполнено : *{st.down_levels_completed}/{DOWN_LEVELS}*\n"
         f"Ордера TP выставлены : *{len(st.down_sell_orders)}*"
     )
 

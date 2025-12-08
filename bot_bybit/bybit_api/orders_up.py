@@ -120,7 +120,7 @@ def buy_strk() -> str:
 
     return (
         f"✅ Куплено STRK на сумму *{usdt_int}* USDT по цене *{avg_price}* за шт, "
-        f"ждём *{sell_price}* или *{down_trigger_price}* ⬇️\n\n"
+        f"ждём *{sell_price}* или *{down_trigger_price}*\n\n"
         f"📌 Выставлен лимитный ордер\n"
         f"Цена : *{sell_price}*\n"
         f"Количество : *{qty_to_sell}*"
