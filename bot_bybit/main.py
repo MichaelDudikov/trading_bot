@@ -7,17 +7,14 @@ from config import BOT_TOKEN
 from handlers.main_buttons import router as buttons_router
 from handlers.cancel_order import router as cancel_router
 from strategy.stats_storage import load_stats_from_file
-from middleware.auth import AllowOnlyOwnerMiddleware
+from middleware.auth import AllowOnlyWhitelistMiddleware
 
 
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode="Markdown")
-)
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="Markdown"))
 dp = Dispatcher()
 
-dp.message.middleware(AllowOnlyOwnerMiddleware())
-dp.callback_query.middleware(AllowOnlyOwnerMiddleware())
+dp.message.middleware(AllowOnlyWhitelistMiddleware())
+dp.callback_query.middleware(AllowOnlyWhitelistMiddleware())
 
 
 async def main():
