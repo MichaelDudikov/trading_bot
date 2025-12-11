@@ -210,7 +210,7 @@ async def cmd_down(message: types.Message):
             effective_level = lvl + extra
             level_price = round(base * (1 - hybrid_step * effective_level), 4)
 
-        levels_text.append(f"{lvl} уровень : *{level_price}*")
+        levels_text.append(f"{lvl} уровень : ~*{level_price}*")
 
     # ------------------------------
     # Формируем ответ

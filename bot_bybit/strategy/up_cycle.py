@@ -82,6 +82,9 @@ async def strategy_cycle(chat_id: int, bot: Bot):
     """
     while st.strategy_running:
 
+        # 🔄 Каждый новый цикл — считаем, что разворота еще НЕ было
+        st.reversal_detected = False
+
         # --- 1) ЖДЁМ ИСЧЕЗНОВЕНИЯ ЛИМИТКИ ---
         while st.strategy_running:
 
@@ -139,7 +142,7 @@ async def strategy_cycle(chat_id: int, bot: Bot):
                         return
 
             # раньше было 4 секунды — из-за этого пропуск разворотов
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(0.5)
 
         # если UP выключился выше — выходим
         if not st.strategy_running:
@@ -175,4 +178,4 @@ async def strategy_cycle(chat_id: int, bot: Bot):
         result = buy_strk()
         await bot.send_message(chat_id, result, parse_mode="Markdown")
 
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
